@@ -3,7 +3,7 @@
 import { useState, useRef } from 'react'
 import axios from 'axios'
 
-type UploadStatus = 'idle' | 'uploading' | 'success' | 'error'
+type UploadStatus = 'idle' | 'uploading' | 'transcribing' | 'summarizing' | 'success' | 'error'
 
 interface Summary {
   key_points: string[];
@@ -17,11 +17,20 @@ interface UploadResponse {
   transcription?: string;
   summary?: Summary;
   error?: string;
+  progress?: {
+    status: 'transcribing' | 'summarizing';
+    chunk?: number;
+    totalChunks?: number;
+  };
 }
 
 export default function AudioUploader() {
   const [status, setStatus] = useState<UploadStatus>('idle')
   const [progress, setProgress] = useState(0)
+  const [processingProgress, setProcessingProgress] = useState<{
+    chunk: number;
+    total: number;
+  } | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [fileUrl, setFileUrl] = useState<string | null>(null)
   const [transcription, setTranscription] = useState<string | null>(null)
@@ -45,6 +54,13 @@ export default function AudioUploader() {
       return
     }
 
+    // Show warning for large files
+    if (file.size > 25 * 1024 * 1024) {
+      setStatus('uploading')
+      setProgress(0)
+      console.log('Large file detected, processing may take longer...')
+    }
+
     try {
       setStatus('uploading')
       setProgress(0)
@@ -66,13 +82,26 @@ export default function AudioUploader() {
         },
       })
 
-      console.log('111', data)
+      if (data.progress) {
+        if (data.progress.status === 'transcribing') {
+          setStatus('transcribing')
+          if (data.progress.chunk && data.progress.totalChunks) {
+            setProcessingProgress({
+              chunk: data.progress.chunk,
+              total: data.progress.totalChunks
+            })
+          }
+        } else if (data.progress.status === 'summarizing') {
+          setStatus('summarizing')
+        }
+      }
 
       if (data.url) {
         setFileUrl(data.url)
         setTranscription(data.transcription || null)
         setSummary(data.summary || null)
         setStatus('success')
+        setProcessingProgress(null)
       } else {
         throw new Error('No URL returned')
       }
@@ -141,6 +170,35 @@ export default function AudioUploader() {
               </div>
               <p className="text-sm text-center text-gray-600 dark:text-gray-400">
                 Uploading... {progress}%
+              </p>
+            </div>
+          )}
+
+          {status === 'transcribing' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-center gap-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500" />
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Transcribing audio
+                  {processingProgress && ` (Chunk ${processingProgress.chunk}/${processingProgress.total})`}
+                </p>
+              </div>
+              {processingProgress && (
+                <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500 transition-all duration-300"
+                    style={{ width: `${(processingProgress.chunk / processingProgress.total) * 100}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {status === 'summarizing' && (
+            <div className="flex items-center justify-center gap-2">
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500" />
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Generating summary...
               </p>
             </div>
           )}

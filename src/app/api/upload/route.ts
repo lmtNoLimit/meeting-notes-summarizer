@@ -6,12 +6,6 @@ import {
   collection, 
   addDoc, 
   serverTimestamp,
-  query,
-  where,
-  orderBy,
-  limit,
-  getDocs,
-  startAfter,
 } from 'firebase/firestore'
 // import { getAnalytics } from 'firebase/analytics'
 import OpenAI from 'openai'
@@ -21,7 +15,6 @@ import { firebaseConfig } from '@/lib/firebase'
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 })
-console.log('configs', firebaseConfig)
 // Initialize Firebase
 const app = initializeApp(firebaseConfig)
 // const analytics = getAnalytics(app)
@@ -29,7 +22,10 @@ const storage = getStorage(app)
 const db = getFirestore(app)
 
 // File size limit (25MB - Whisper's limit)
-const MAX_FILE_SIZE = 50 * 1024 * 1024
+const MAX_FILE_SIZE = 25 * 1024 * 1024
+
+// Chunk size: 24MB to stay safely under Whisper's 25MB limit
+const CHUNK_SIZE = 24 * 1024 * 1024
 
 interface Summary {
   key_points: string[];
@@ -81,22 +77,71 @@ async function generateSummary(transcription: string): Promise<Summary> {
   }
 }
 
-async function transcribeAudio(audioFile: File): Promise<string> {
+async function transcribeAudioChunk(chunk: Blob, index: number): Promise<string> {
   try {
-    const arrayBuffer = await audioFile.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
-
     const transcription = await openai.audio.transcriptions.create({
-      file: new File([buffer], 'audio.mp3', {
-        type: audioFile.type,
+      file: new File([chunk], `chunk-${index}.mp3`, {
+        type: 'audio/mpeg',
         lastModified: Date.now()
       }),
       model: 'whisper-1',
-      language: 'en', // or 'auto' for language detection
+      language: 'en',
       response_format: 'text',
     })
-
     return transcription
+  } catch (error: unknown) {
+    if (error && typeof error === 'object' && 'status' in error && error.status === 429) {
+      throw new Error('Rate limit exceeded. Please try again later.')
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error occurred'
+    throw new Error(`Failed to transcribe chunk ${index}: ${message}`)
+  }
+}
+
+async function transcribeAudio(audioFile: File): Promise<string> {
+  try {
+    const buffer = await audioFile.arrayBuffer()
+    
+    // If file is under chunk size, process normally
+    if (buffer.byteLength <= CHUNK_SIZE) {
+      const transcription = await openai.audio.transcriptions.create({
+        file: new File([buffer], 'audio.mp3', {
+          type: audioFile.type,
+          lastModified: Date.now()
+        }),
+        model: 'whisper-1',
+        language: 'en',
+        response_format: 'text',
+      })
+      return transcription
+    }
+
+    // For larger files, split into chunks
+    const chunks: Blob[] = []
+    let offset = 0
+    
+    while (offset < buffer.byteLength) {
+      const chunk = buffer.slice(offset, offset + CHUNK_SIZE)
+      chunks.push(new Blob([chunk], { type: audioFile.type }))
+      offset += CHUNK_SIZE
+    }
+
+    console.log(`Processing ${chunks.length} chunks...`)
+
+    // Process chunks with a small delay between each to avoid rate limits
+    const transcriptions: string[] = []
+    for (let i = 0; i < chunks.length; i++) {
+      if (i > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+      console.log(`Transcribing chunk ${i + 1}/${chunks.length}`)
+      const chunkTranscription = await transcribeAudioChunk(chunks[i], i)
+      transcriptions.push(chunkTranscription)
+    }
+
+    // Combine all transcriptions
+    return transcriptions.join(' ')
+
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'status' in error && error.status === 429) {
       throw new Error('Rate limit exceeded. Please try again later.')
@@ -132,9 +177,9 @@ export async function POST(request: Request) {
     }
 
     // Validate file size
-    if (file.size > MAX_FILE_SIZE) {
-      return NextResponse.json({ error: 'File size exceeds 25MB limit' }, { status: 400 })
-    }
+    // if (file.size > MAX_FILE_SIZE) {
+    //   return NextResponse.json({ error: 'File size exceeds 25MB limit' }, { status: 400 })
+    // }
 
     // Validate file type
     const allowedTypes = ['audio/mpeg', 'audio/wav', 'audio/x-m4a', 'audio/mp4']
@@ -198,11 +243,11 @@ export async function POST(request: Request) {
   }
 }
 
-// Increase payload size limit for the API route
+// Update the file size limit in the config
 export const config = {
   api: {
     bodyParser: {
-      sizeLimit: '26mb', // Slightly larger than Whisper's limit to account for form data overhead
+      sizeLimit: '100mb', // Increased to handle larger files
     },
   },
 }
