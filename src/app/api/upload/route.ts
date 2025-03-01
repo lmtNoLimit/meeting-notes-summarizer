@@ -71,7 +71,7 @@ async function generateSummary(transcription: string): Promise<Summary> {
     if (!summary.action_items?.length) summary.action_items = ["No action items identified"]
     if (!summary.main_topics?.length) summary.main_topics = ["No main topics identified"]
     return summary
-  } catch (error: Error) {
+  } catch (error: any) {
     console.error('Summary generation error:', error)
     throw new Error('Failed to generate summary: ' + error.message)
   }
