@@ -50,9 +50,9 @@ async function generateSummary(transcription: string): Promise<Summary> {
         {
           role: "system",
           content: `Summarize meetings concisely. Output JSON with:
-            key_points: 3 main discussion points
-            action_items: 2-3 specific tasks or decisions
-            main_topics: 2 primary themes
+            key_points: at least 3 main discussion points
+            action_items: at leat 2-3 specific tasks or decisions
+            main_topics: at least 2 primary themes
             Keep points brief and clear. JSON format only.`
         },
         {
